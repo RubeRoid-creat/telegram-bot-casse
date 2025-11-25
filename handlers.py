@@ -279,10 +279,6 @@ async def process_transaction(message: Message, state: FSMContext):
 @router.message(F.text)
 async def handle_text_message(message: Message):
     """Обработка текстовых сообщений с суммами"""
-    # Пропускаем сообщения в личных чатах, если они не команды
-    if message.chat.type == 'private':
-        return
-    
     # Пропускаем команды
     if message.text.startswith('/'):
         return
@@ -307,12 +303,29 @@ async def handle_text_message(message: Message):
         payment_name = "наличными" if payment_type == "cash" else "безналичными"
         operation_name = "добавлено" if operation_type == "add" else "вычтено"
         
-        await message.reply(
-            f"✅ {operation_name.capitalize()} {amount:.2f} ₽ {payment_name}"
-        )
+        if message.chat.type == 'private':
+            await message.answer(
+                f"✅ {operation_name.capitalize()} {amount:.2f} ₽ {payment_name}",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await message.reply(
+                f"✅ {operation_name.capitalize()} {amount:.2f} ₽ {payment_name}"
+            )
         
         # Показываем обновленный баланс
         await show_balance(message.chat.id, message)
+    else:
+        # Если сообщение не распознано, показываем подсказку в личных чатах
+        if message.chat.type == 'private':
+            await message.answer(
+                "❓ Не удалось распознать операцию.\n\n"
+                "Используйте кнопки ниже или отправьте сообщение в формате:\n"
+                "• 1000 нал - добавить 1000 наличными\n"
+                "• +500 карт - добавить 500 безналичными\n"
+                "• -200 нал - вычесть 200 наличными",
+                reply_markup=get_main_keyboard()
+            )
 
 
 # Обработчики callback-запросов от кнопок
