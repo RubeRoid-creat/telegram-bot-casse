@@ -28,10 +28,10 @@ cd "Z:\Telegram_bot Casse"
 # Создайте первый коммит
 git commit -m "Initial commit: Telegram bot for cash counting"
 
-# Добавьте удаленный репозиторий (замените URL на ваш)
-git remote add origin https://github.com/ваш_username/telegram-bot-casse.git
+# Добавьте удаленный репозиторий
+git remote add origin https://github.com/RubeRoid-creat/telegram-bot-casse.git
 # или для SSH:
-# git remote add origin git@github.com:ваш_username/telegram-bot-casse.git
+# git remote add origin git@github.com:RubeRoid-creat/telegram-bot-casse.git
 
 # Отправьте код
 git branch -M main
@@ -52,10 +52,10 @@ ssh root@212.74.227.208
 # Перейдите в нужную директорию
 cd /root
 
-# Клонируйте репозиторий (замените URL на ваш)
-git clone https://github.com/ваш_username/telegram-bot-casse.git
+# Клонируйте репозиторий
+git clone https://github.com/RubeRoid-creat/telegram-bot-casse.git
 # или если используете SSH ключ на сервере:
-# git clone git@github.com:ваш_username/telegram-bot-casse.git
+# git clone git@github.com:RubeRoid-creat/telegram-bot-casse.git
 
 # Перейдите в папку проекта
 cd telegram-bot-casse

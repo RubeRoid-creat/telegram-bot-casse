@@ -14,6 +14,9 @@ class TransactionStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_payment_type = State()
     waiting_for_operation_amount = State()
+    waiting_for_category = State()
+    waiting_for_category_name = State()
+    waiting_for_unit_data = State()  # Ожидание количества, цены, себестоимости
 
 
 def parse_amount(text: str) -> Tuple[Optional[float], Optional[str]]:
@@ -54,6 +57,10 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="➖ Вычесть", callback_data="subtract_menu")
         ],
         [
+            InlineKeyboardButton(text="📊 Юнит-экономика", callback_data="unit_economics"),
+            InlineKeyboardButton(text="📁 Категории", callback_data="categories_menu")
+        ],
+        [
             InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh")
         ]
     ])
@@ -64,12 +71,19 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
 async def cmd_start(message: Message):
     """Обработка команды /start"""
     await message.answer(
-        "💰 Бот для подсчета кассы\n\n"
+        "💰 Бот для подсчета кассы с юнит-экономикой\n\n"
         "Используйте кнопки ниже для быстрого доступа к функциям.\n\n"
-        "Также можно писать суммы в чат:\n"
+        "Быстрый ввод сумм:\n"
         "+1000 нал - добавить 1000 наличными\n"
         "-500 карт - вычесть 500 с карты\n"
-        "2000 нал - добавить 2000 наличными",
+        "2000 нал - добавить 2000 наличными\n\n"
+        "Юнит-экономика:\n"
+        "• Создавайте категории для организации транзакций\n"
+        "• Указывайте количество и цену: 500 кол 5 цена 100\n"
+        "• Отслеживайте прибыльность по категориям\n\n"
+        "Команды:\n"
+        "/unit - юнит-экономика\n"
+        "/categories - управление категориями",
         reply_markup=get_main_keyboard()
     )
 
@@ -193,11 +207,67 @@ async def cmd_reset(message: Message):
     await message.answer("✅ Баланс сброшен", reply_markup=get_main_keyboard())
 
 
+def parse_unit_data(text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Парсинг юнит-данных: количество, цена за единицу, себестоимость"""
+    quantity = None
+    unit_price = None
+    cost = None
+    
+    text_lower = text.lower()
+    
+    # Парсинг количества (кол-во, кол, qty, количество)
+    quantity_patterns = [
+        r'кол[-\s]?([0-9]+[.,]?[0-9]*)',
+        r'количество[:\s]+([0-9]+[.,]?[0-9]*)',
+        r'qty[:\s]+([0-9]+[.,]?[0-9]*)',
+        r'(\d+[.,]?\d*)\s*(шт|ед|units)'
+    ]
+    for pattern in quantity_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            quantity = float(match.group(1).replace(',', '.'))
+            break
+    
+    # Парсинг цены за единицу (цена/ед, цена за, price/unit)
+    price_patterns = [
+        r'цена[:\s/]+([0-9]+[.,]?[0-9]*)',
+        r'price[:\s/]+([0-9]+[.,]?[0-9]*)',
+        r'([0-9]+[.,]?[0-9]*)\s*(за\s*единицу|/ед|/unit)'
+    ]
+    for pattern in price_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            unit_price = float(match.group(1).replace(',', '.'))
+            break
+    
+    # Парсинг себестоимости (себест, cost)
+    cost_patterns = [
+        r'себест[=:\s]+([0-9]+[.,]?[0-9]*)',
+        r'cost[=:\s]+([0-9]+[.,]?[0-9]*)',
+        r'себестоимость[=:\s]+([0-9]+[.,]?[0-9]*)'
+    ]
+    for pattern in cost_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            cost = float(match.group(1).replace(',', '.'))
+            break
+    
+    return quantity, unit_price, cost
+
+
 @router.message(TransactionStates.waiting_for_operation_amount)
 async def process_operation_amount(message: Message, state: FSMContext):
     """Обработка введенной суммы для операции"""
+    text = message.text.strip()
+    
+    # Парсинг основной суммы (первое число в тексте)
+    numbers = re.findall(r'\d+[.,]?\d*', text)
+    if not numbers:
+        await message.answer("❌ Неверный формат суммы. Введите число, например: 1000 или 500.50")
+        return
+    
     try:
-        amount = float(message.text.replace(',', '.'))
+        amount = float(numbers[0].replace(',', '.'))
         if amount <= 0:
             await message.answer("❌ Сумма должна быть больше нуля. Попробуйте еще раз.")
             return
@@ -205,9 +275,17 @@ async def process_operation_amount(message: Message, state: FSMContext):
         await message.answer("❌ Неверный формат суммы. Введите число, например: 1000 или 500.50")
         return
     
+    # Парсинг юнит-данных
+    quantity, unit_price, cost = parse_unit_data(text)
+    
+    # Если указано количество и цена, пересчитываем сумму
+    if quantity and unit_price:
+        amount = quantity * unit_price
+    
     data = await state.get_data()
     operation_type = data.get("operation")
     payment_type = data.get("payment_type")
+    category_id = data.get("category_id")
     
     await db.add_transaction(
         chat_id=message.chat.id,
@@ -216,16 +294,25 @@ async def process_operation_amount(message: Message, state: FSMContext):
         operation_type=operation_type,
         description=f"Операция от {message.from_user.first_name}",
         user_id=message.from_user.id,
-        username=message.from_user.username or message.from_user.first_name
+        username=message.from_user.username or message.from_user.first_name,
+        category_id=category_id,
+        quantity=quantity,
+        unit_price=unit_price,
+        cost=cost
     )
     
     payment_name = "наличными" if payment_type == "cash" else "безналичными"
     operation_name = "добавлено" if operation_type == "add" else "вычтено"
     
-    await message.answer(
-        f"✅ {operation_name.capitalize()} {amount:.2f} ₽ {payment_name}",
-        reply_markup=get_main_keyboard()
-    )
+    response = f"✅ {operation_name.capitalize()} {amount:.2f} ₽ {payment_name}"
+    if quantity:
+        response += f"\nКоличество: {quantity:.1f} ед."
+    if unit_price:
+        response += f"\nЦена за единицу: {unit_price:.2f} ₽"
+    if cost:
+        response += f"\nСебестоимость: {cost:.2f} ₽"
+    
+    await message.answer(response, reply_markup=get_main_keyboard())
     
     # Показываем обновленный баланс
     await show_balance(message.chat.id, message)
@@ -333,12 +420,16 @@ async def handle_text_message(message: Message):
 async def callback_main_menu(callback: CallbackQuery):
     """Возврат в главное меню"""
     await callback.message.edit_text(
-        "💰 Бот для подсчета кассы\n\n"
+        "💰 Бот для подсчета кассы с юнит-экономикой\n\n"
         "Используйте кнопки ниже для быстрого доступа к функциям.\n\n"
-        "Также можно писать суммы в чат:\n"
+        "Быстрый ввод сумм:\n"
         "+1000 нал - добавить 1000 наличными\n"
         "-500 карт - вычесть 500 с карты\n"
-        "2000 нал - добавить 2000 наличными",
+        "2000 нал - добавить 2000 наличными\n\n"
+        "Юнит-экономика:\n"
+        "• Создавайте категории для организации транзакций\n"
+        "• Указывайте количество и цену: 500 кол 5 цена 100\n"
+        "• Отслеживайте прибыльность по категориям",
         reply_markup=get_main_keyboard()
     )
     await callback.answer()
@@ -395,13 +486,280 @@ async def callback_payment_type(callback: CallbackQuery, state: FSMContext):
     
     await state.update_data(operation=operation, payment_type=payment_type)
     
+    # Предлагаем выбрать категорию или пропустить
+    categories = await db.get_categories(callback.message.chat.id)
+    
+    operation_text = "добавления" if operation == "add" else "вычитания"
+    payment_text = "наличными" if payment_type == "cash" else "безналичными"
+    
+    if categories and operation == "add":
+        keyboard_buttons = []
+        for cat_id, name, description, created_at in categories:
+            keyboard_buttons.append([
+                InlineKeyboardButton(text=f"📁 {name}", callback_data=f"select_cat_{cat_id}")
+            ])
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="⏭ Пропустить", callback_data="skip_category")
+        ])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+        
+        await callback.message.edit_text(
+            f"Выберите категорию для {operation_text} {payment_text}:\n\n"
+            f"Или пропустите, если категория не нужна.",
+            reply_markup=keyboard
+        )
+        await state.set_state(TransactionStates.waiting_for_category)
+    else:
+        await callback.message.edit_text(
+            f"Введите сумму для {operation_text} {payment_text}:\n\n"
+            f"Например: 1000 или 500.50\n\n"
+            f"Для юнит-экономики можно указать:\n"
+            f"• Количество: кол-во 5 или кол 5\n"
+            f"• Цена за единицу: цена 100 или price 100\n"
+            f"• Себестоимость: себест=50 или cost=50\n\n"
+            f"Пример: 500 кол 5 цена 100 себест=50"
+        )
+        await state.set_state(TransactionStates.waiting_for_operation_amount)
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("select_cat_"))
+async def callback_select_category(callback: CallbackQuery, state: FSMContext):
+    """Выбор категории для транзакции"""
+    category_id = int(callback.data.split("_")[-1])
+    await state.update_data(category_id=category_id)
+    
+    categories = await db.get_categories(callback.message.chat.id)
+    category = next((c for c in categories if c[0] == category_id), None)
+    category_name = category[1] if category else "Неизвестная"
+    
+    data = await state.get_data()
+    operation = data.get("operation")
+    payment_type = data.get("payment_type")
+    
+    operation_text = "добавления" if operation == "add" else "вычитания"
+    payment_text = "наличными" if payment_type == "cash" else "безналичными"
+    
+    await callback.message.edit_text(
+        f"Категория: {category_name}\n\n"
+        f"Введите сумму для {operation_text} {payment_text}:\n\n"
+        f"Например: 1000 или 500.50\n\n"
+        f"Для юнит-экономики можно указать:\n"
+        f"• Количество: кол-во 5 или кол 5\n"
+        f"• Цена за единицу: цена 100 или price 100\n"
+        f"• Себестоимость: себест=50 или cost=50\n\n"
+        f"Пример: 500 кол 5 цена 100 себест=50"
+    )
+    await state.set_state(TransactionStates.waiting_for_operation_amount)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "skip_category")
+async def callback_skip_category(callback: CallbackQuery, state: FSMContext):
+    """Пропуск выбора категории"""
+    data = await state.get_data()
+    operation = data.get("operation")
+    payment_type = data.get("payment_type")
+    
     operation_text = "добавления" if operation == "add" else "вычитания"
     payment_text = "наличными" if payment_type == "cash" else "безналичными"
     
     await callback.message.edit_text(
         f"Введите сумму для {operation_text} {payment_text}:\n\n"
-        f"Например: 1000 или 500.50"
+        f"Например: 1000 или 500.50\n\n"
+        f"Для юнит-экономики можно указать:\n"
+        f"• Количество: кол-во 5 или кол 5\n"
+        f"• Цена за единицу: цена 100 или price 100\n"
+        f"• Себестоимость: себест=50 или cost=50\n\n"
+        f"Пример: 500 кол 5 цена 100 себест=50"
     )
     await state.set_state(TransactionStates.waiting_for_operation_amount)
     await callback.answer()
+
+
+# Обработчики для категорий
+@router.callback_query(F.data == "categories_menu")
+async def callback_categories_menu(callback: CallbackQuery):
+    """Меню управления категориями"""
+    categories = await db.get_categories(callback.message.chat.id)
+    
+    keyboard_buttons = []
+    for cat_id, name, description, created_at in categories:
+        keyboard_buttons.append([
+            InlineKeyboardButton(text=f"📁 {name}", callback_data=f"cat_view_{cat_id}")
+        ])
+    
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="➕ Создать категорию", callback_data="cat_create")
+    ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")
+    ])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    
+    if categories:
+        text = "📁 Ваши категории:\n\n"
+        for cat_id, name, description, created_at in categories:
+            text += f"• {name}"
+            if description:
+                text += f" - {description}"
+            text += "\n"
+    else:
+        text = "📁 Категории не созданы. Создайте первую категорию для организации транзакций."
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "cat_create")
+async def callback_category_create(callback: CallbackQuery, state: FSMContext):
+    """Создание новой категории"""
+    await callback.message.edit_text(
+        "➕ Создание категории\n\n"
+        "Введите название категории:\n"
+        "Например: Кофе, Обеды, Товары"
+    )
+    await state.set_state(TransactionStates.waiting_for_category_name)
+    await callback.answer()
+
+
+@router.message(TransactionStates.waiting_for_category_name)
+async def process_category_name(message: Message, state: FSMContext):
+    """Обработка названия категории"""
+    category_name = message.text.strip()
+    if len(category_name) > 50:
+        await message.answer("❌ Название категории слишком длинное (макс. 50 символов). Попробуйте еще раз.")
+        return
+    
+    category_id = await db.create_category(message.chat.id, category_name)
+    if category_id:
+        await message.answer(
+            f"✅ Категория '{category_name}' создана!",
+            reply_markup=get_main_keyboard()
+        )
+    else:
+        await message.answer(
+            f"❌ Категория '{category_name}' уже существует.",
+            reply_markup=get_main_keyboard()
+        )
+    await state.clear()
+
+
+@router.callback_query(F.data.startswith("cat_view_"))
+async def callback_category_view(callback: CallbackQuery):
+    """Просмотр категории"""
+    category_id = int(callback.data.split("_")[-1])
+    categories = await db.get_categories(callback.message.chat.id)
+    category = next((c for c in categories if c[0] == category_id), None)
+    
+    if not category:
+        await callback.answer("❌ Категория не найдена", show_alert=True)
+        return
+    
+    cat_id, name, description, created_at = category
+    
+    # Получаем статистику по категории
+    stats = await db.get_unit_economics_by_category(callback.message.chat.id, category_id, 30)
+    
+    text = f"📁 Категория: {name}\n"
+    if description:
+        text += f"Описание: {description}\n"
+    text += f"\n📊 Статистика за 30 дней:\n\n"
+    
+    if stats:
+        for row in stats:
+            cat_id, cat_name, trans_count, quantity, avg_price, revenue, cost, avg_amount = row
+            profit = revenue - cost
+            margin = (profit / revenue * 100) if revenue > 0 else 0
+            text += (
+                f"Транзакций: {trans_count}\n"
+                f"Единиц продано: {quantity:.1f}\n"
+                f"Выручка: {revenue:.2f} ₽\n"
+                f"Себестоимость: {cost:.2f} ₽\n"
+                f"Прибыль: {profit:.2f} ₽\n"
+                f"Маржа: {margin:.1f}%\n"
+                f"Средний чек: {avg_amount:.2f} ₽\n"
+                f"Средняя цена за единицу: {avg_price:.2f} ₽\n"
+            )
+    else:
+        text += "Нет данных за этот период"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+# Обработчики для юнит-экономики
+@router.callback_query(F.data == "unit_economics")
+async def callback_unit_economics(callback: CallbackQuery):
+    """Показать юнит-экономику"""
+    summary = await db.get_unit_economics_summary(callback.message.chat.id, 30)
+    categories_stats = await db.get_unit_economics_by_category(callback.message.chat.id, None, 30)
+    
+    text = "📊 Юнит-экономика за 30 дней\n\n"
+    
+    if summary and summary['revenue'] > 0:
+        text += (
+            f"💰 Общая статистика:\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Транзакций: {summary['transactions']}\n"
+            f"Единиц продано: {summary['units_sold']:.1f}\n"
+            f"Выручка: {summary['revenue']:.2f} ₽\n"
+            f"Себестоимость: {summary['cost']:.2f} ₽\n"
+            f"Прибыль: {summary['profit']:.2f} ₽\n"
+            f"Маржа: {summary['margin']:.1f}%\n"
+            f"Средний чек: {summary['avg_check']:.2f} ₽\n"
+            f"Средняя цена за единицу: {summary['avg_unit_price']:.2f} ₽\n\n"
+        )
+    else:
+        text += "💰 Общая статистика:\nНет данных за этот период\n\n"
+    
+    if categories_stats:
+        text += "📁 По категориям:\n━━━━━━━━━━━━━━━━━━━━\n"
+        for row in categories_stats[:5]:  # Показываем топ-5
+            cat_id, cat_name, trans_count, quantity, avg_price, revenue, cost, avg_amount = row
+            profit = revenue - cost
+            margin = (profit / revenue * 100) if revenue > 0 else 0
+            cat_name_display = cat_name if cat_name else "Без категории"
+            text += (
+                f"\n{cat_name_display}:\n"
+                f"  Выручка: {revenue:.2f} ₽\n"
+                f"  Прибыль: {profit:.2f} ₽ ({margin:.1f}%)\n"
+                f"  Единиц: {quantity:.1f}\n"
+            )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📁 По категориям", callback_data="categories_menu")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.message(Command("unit"))
+async def cmd_unit(message: Message):
+    """Команда для просмотра юнит-экономики"""
+    callback = type('obj', (object,), {
+        'message': message,
+        'answer': lambda x: None,
+        'data': 'unit_economics'
+    })()
+    await callback_unit_economics(callback)
+
+
+@router.message(Command("categories"))
+async def cmd_categories(message: Message):
+    """Команда для просмотра категорий"""
+    callback = type('obj', (object,), {
+        'message': message,
+        'answer': lambda x: None,
+        'data': 'categories_menu'
+    })()
+    await callback_categories_menu(callback)
 
