@@ -520,6 +520,13 @@ async def callback_refresh(callback: CallbackQuery):
     await callback_main_menu(callback)
 
 
+@router.callback_query(F.data == "cancel_operation")
+async def callback_cancel_operation(callback: CallbackQuery, state: FSMContext):
+    """Отмена текущей операции и возврат на главную"""
+    await state.clear()
+    await callback_main_menu(callback)
+
+
 @router.callback_query(F.data == "add_menu")
 async def callback_add_menu(callback: CallbackQuery, state: FSMContext):
     """Меню добавления средств"""
@@ -573,6 +580,9 @@ async def callback_payment_type(callback: CallbackQuery, state: FSMContext):
         keyboard_buttons.append([
             InlineKeyboardButton(text="⏭ Пропустить", callback_data="skip_category")
         ])
+        keyboard_buttons.append([
+            InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")
+        ])
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         
         await callback.message.edit_text(
@@ -583,10 +593,14 @@ async def callback_payment_type(callback: CallbackQuery, state: FSMContext):
         await state.set_state(TransactionStates.waiting_for_category)
     else:
         hint = get_unit_economics_hint(operation)
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏠 На главную", callback_data="cancel_operation")]
+        ])
         await callback.message.edit_text(
             f"Введите сумму для {operation_text} {payment_text}:\n\n"
             f"Например: 1000 или 500.50\n\n"
-            f"{hint}"
+            f"{hint}",
+            reply_markup=keyboard
         )
         await state.set_state(TransactionStates.waiting_for_operation_amount)
     
@@ -611,11 +625,15 @@ async def callback_select_category(callback: CallbackQuery, state: FSMContext):
     payment_text = "наличными" if payment_type == "cash" else "безналичными"
     
     hint = get_unit_economics_hint(operation)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 На главную", callback_data="cancel_operation")]
+    ])
     await callback.message.edit_text(
         f"Категория: {category_name}\n\n"
         f"Введите сумму для {operation_text} {payment_text}:\n\n"
         f"Например: 1000 или 500.50\n\n"
-        f"{hint}"
+        f"{hint}",
+        reply_markup=keyboard
     )
     await state.set_state(TransactionStates.waiting_for_operation_amount)
     await callback.answer()
@@ -632,10 +650,14 @@ async def callback_skip_category(callback: CallbackQuery, state: FSMContext):
     payment_text = "наличными" if payment_type == "cash" else "безналичными"
     
     hint = get_unit_economics_hint(operation)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 На главную", callback_data="cancel_operation")]
+    ])
     await callback.message.edit_text(
         f"Введите сумму для {operation_text} {payment_text}:\n\n"
         f"Например: 1000 или 500.50\n\n"
-        f"{hint}"
+        f"{hint}",
+        reply_markup=keyboard
     )
     await state.set_state(TransactionStates.waiting_for_operation_amount)
     await callback.answer()
@@ -691,6 +713,9 @@ async def callback_income_sources_menu(callback: CallbackQuery):
     keyboard_buttons.append([
         InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")
     ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")
+    ])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
@@ -727,6 +752,9 @@ async def callback_expense_categories_menu(callback: CallbackQuery):
     keyboard_buttons.append([
         InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")
     ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")
+    ])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
@@ -749,10 +777,14 @@ async def callback_expense_categories_menu(callback: CallbackQuery):
 async def callback_create_income_source(callback: CallbackQuery, state: FSMContext):
     """Создание источника дохода"""
     await state.update_data(category_type="income_source")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")]
+    ])
     await callback.message.edit_text(
         "➕ Создание источника дохода\n\n"
         "Введите название источника:\n"
-        "Например: Авито, Сайт, Сарафан, Приложение"
+        "Например: Авито, Сайт, Сарафан, Приложение",
+        reply_markup=keyboard
     )
     await state.set_state(TransactionStates.waiting_for_category_name)
     await callback.answer()
@@ -762,10 +794,14 @@ async def callback_create_income_source(callback: CallbackQuery, state: FSMConte
 async def callback_create_expense_category(callback: CallbackQuery, state: FSMContext):
     """Создание категории расхода"""
     await state.update_data(category_type="expense_category")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")]
+    ])
     await callback.message.edit_text(
         "➕ Создание категории расхода\n\n"
         "Введите название категории:\n"
-        "Например: Закупка, Реклама, Аренда, Зарплата"
+        "Например: Закупка, Реклама, Аренда, Зарплата",
+        reply_markup=keyboard
     )
     await state.set_state(TransactionStates.waiting_for_category_name)
     await callback.answer()
@@ -831,6 +867,9 @@ async def callback_category_view(callback: CallbackQuery):
         ],
         [
             InlineKeyboardButton(text="🔙 Назад", callback_data=back_menu)
+        ],
+        [
+            InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")
         ]
     ])
     
@@ -859,6 +898,9 @@ async def callback_delete_category(callback: CallbackQuery):
         [
             InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_{category_id}"),
             InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_view_{category_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")
         ]
     ])
     
@@ -958,7 +1000,8 @@ async def callback_summary_table(callback: CallbackQuery):
         text += f"📊 Маржа: {margin:.1f}%"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")]
+        [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")],
+        [InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")]
     ])
     
     await callback.message.edit_text(text, reply_markup=keyboard)
