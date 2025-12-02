@@ -363,11 +363,54 @@ async def process_transaction(message: Message, state: FSMContext):
     await state.clear()
 
 
+@router.message(TransactionStates.waiting_for_category_name)
+async def process_category_name(message: Message, state: FSMContext):
+    """Обработка названия категории"""
+    # Игнорируем команды
+    if message.text and message.text.startswith('/'):
+        return
+    
+    if not message.text:
+        await message.answer("❌ Пожалуйста, введите текстовое название категории.")
+        return
+    
+    category_name = message.text.strip()
+    if not category_name:
+        await message.answer("❌ Название категории не может быть пустым. Попробуйте еще раз.")
+        return
+        
+    if len(category_name) > 50:
+        await message.answer("❌ Название категории слишком длинное (макс. 50 символов). Попробуйте еще раз.")
+        return
+    
+    category_id = await db.create_category(message.chat.id, category_name)
+    if category_id:
+        await message.answer(
+            f"✅ Категория '{category_name}' создана!",
+            reply_markup=get_main_keyboard()
+        )
+    else:
+        await message.answer(
+            f"❌ Категория '{category_name}' уже существует.",
+            reply_markup=get_main_keyboard()
+        )
+    await state.clear()
+
+
 @router.message(F.text)
-async def handle_text_message(message: Message):
+async def handle_text_message(message: Message, state: FSMContext):
     """Обработка текстовых сообщений с суммами"""
     # Пропускаем команды
     if message.text.startswith('/'):
+        return
+    
+    # Пропускаем, если ожидается ввод категории или других специальных данных
+    current_state = await state.get_state()
+    if current_state in [
+        TransactionStates.waiting_for_category_name,
+        TransactionStates.waiting_for_operation_amount,
+        TransactionStates.waiting_for_payment_type
+    ]:
         return
     
     amount, payment_type = parse_amount(message.text)
@@ -623,28 +666,6 @@ async def callback_category_create(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(TransactionStates.waiting_for_category_name)
     await callback.answer()
-
-
-@router.message(TransactionStates.waiting_for_category_name)
-async def process_category_name(message: Message, state: FSMContext):
-    """Обработка названия категории"""
-    category_name = message.text.strip()
-    if len(category_name) > 50:
-        await message.answer("❌ Название категории слишком длинное (макс. 50 символов). Попробуйте еще раз.")
-        return
-    
-    category_id = await db.create_category(message.chat.id, category_name)
-    if category_id:
-        await message.answer(
-            f"✅ Категория '{category_name}' создана!",
-            reply_markup=get_main_keyboard()
-        )
-    else:
-        await message.answer(
-            f"❌ Категория '{category_name}' уже существует.",
-            reply_markup=get_main_keyboard()
-        )
-    await state.clear()
 
 
 @router.callback_query(F.data.startswith("cat_view_"))
