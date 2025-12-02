@@ -184,7 +184,7 @@ async def get_unit_economics_by_category(chat_id: int, category_id: Optional[int
                     COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN t.quantity ELSE 0 END), 0) as total_quantity,
                     COALESCE(AVG(CASE WHEN t.operation_type = 'add' AND t.quantity > 0 THEN t.unit_price ELSE NULL END), 0) as avg_unit_price,
                     COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN t.amount ELSE -t.amount END), 0) as total_revenue,
-                    COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN COALESCE(t.cost, 0) ELSE -COALESCE(t.cost, 0) END), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN t.operation_type = 'subtract' THEN COALESCE(t.cost, 0) ELSE 0 END), 0) as total_cost,
                     COALESCE(AVG(CASE WHEN t.operation_type = 'add' THEN t.amount ELSE NULL END), 0) as avg_transaction_amount
                 FROM transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
@@ -204,7 +204,7 @@ async def get_unit_economics_by_category(chat_id: int, category_id: Optional[int
                     COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN t.quantity ELSE 0 END), 0) as total_quantity,
                     COALESCE(AVG(CASE WHEN t.operation_type = 'add' AND t.quantity > 0 THEN t.unit_price ELSE NULL END), 0) as avg_unit_price,
                     COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN t.amount ELSE -t.amount END), 0) as total_revenue,
-                    COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN COALESCE(t.cost, 0) ELSE -COALESCE(t.cost, 0) END), 0) as total_cost,
+                    COALESCE(SUM(CASE WHEN t.operation_type = 'subtract' THEN COALESCE(t.cost, 0) ELSE 0 END), 0) as total_cost,
                     COALESCE(AVG(CASE WHEN t.operation_type = 'add' THEN t.amount ELSE NULL END), 0) as avg_transaction_amount
                 FROM transactions t
                 LEFT JOIN categories c ON t.category_id = c.id
@@ -222,16 +222,15 @@ async def get_unit_economics_summary(chat_id: int, days: int = 30):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("""
             SELECT 
-                COUNT(DISTINCT t.id) as total_transactions,
+                COUNT(DISTINCT CASE WHEN t.operation_type = 'add' THEN t.id END) as total_transactions,
                 COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN t.quantity ELSE 0 END), 0) as total_units_sold,
-                COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN t.amount ELSE -t.amount END), 0) as total_revenue,
-                COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN COALESCE(t.cost, 0) ELSE -COALESCE(t.cost, 0) END), 0) as total_cost,
+                COALESCE(SUM(CASE WHEN t.operation_type = 'add' THEN t.amount ELSE 0 END), 0) as total_revenue,
+                COALESCE(SUM(CASE WHEN t.operation_type = 'subtract' THEN COALESCE(t.cost, 0) ELSE 0 END), 0) as total_cost,
                 COALESCE(AVG(CASE WHEN t.operation_type = 'add' THEN t.amount ELSE NULL END), 0) as avg_check,
                 COALESCE(AVG(CASE WHEN t.operation_type = 'add' AND t.quantity > 0 THEN t.unit_price ELSE NULL END), 0) as avg_unit_price
             FROM transactions t
             WHERE t.chat_id = ? 
                 AND datetime(t.created_at) >= datetime('now', '-' || ? || ' days')
-                AND t.operation_type = 'add'
         """, (chat_id, days))
         row = await cursor.fetchone()
         if row:

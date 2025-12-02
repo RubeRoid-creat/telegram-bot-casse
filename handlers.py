@@ -16,7 +16,7 @@ class TransactionStates(StatesGroup):
     waiting_for_operation_amount = State()
     waiting_for_category = State()
     waiting_for_category_name = State()
-    waiting_for_unit_data = State()  # Ожидание количества, цены, себестоимости
+    waiting_for_unit_data = State()  # Ожидание количества, цены, расходов
 
 
 def parse_amount(text: str) -> Tuple[Optional[float], Optional[str]]:
@@ -207,8 +207,25 @@ async def cmd_reset(message: Message):
     await message.answer("✅ Баланс сброшен", reply_markup=get_main_keyboard())
 
 
+def get_unit_economics_hint(operation: str) -> str:
+    """Получить подсказку по юнит-данным в зависимости от операции"""
+    if operation == "add":
+        return (
+            "Для юнит-экономики можно указать:\n"
+            "• Количество: кол-во 5 или кол 5\n"
+            "• Цена за единицу: цена 100 или price 100\n\n"
+            "Пример: 500 кол 5 цена 100"
+        )
+    else:  # subtract
+        return (
+            "Для учета расходов можно указать:\n"
+            "• Расходы: расход=50 или expense=50\n\n"
+            "Пример: 300 расход=50"
+        )
+
+
 def parse_unit_data(text: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Парсинг юнит-данных: количество, цена за единицу, себестоимость"""
+    """Парсинг юнит-данных: количество, цена за единицу, расходы"""
     quantity = None
     unit_price = None
     cost = None
@@ -240,11 +257,13 @@ def parse_unit_data(text: str) -> Tuple[Optional[float], Optional[float], Option
             unit_price = float(match.group(1).replace(',', '.'))
             break
     
-    # Парсинг себестоимости (себест, cost)
+    # Парсинг расходов (расход, расходы, expense)
     cost_patterns = [
-        r'себест[=:\s]+([0-9]+[.,]?[0-9]*)',
-        r'cost[=:\s]+([0-9]+[.,]?[0-9]*)',
-        r'себестоимость[=:\s]+([0-9]+[.,]?[0-9]*)'
+        r'расход[=:\s]+([0-9]+[.,]?[0-9]*)',
+        r'расходы[=:\s]+([0-9]+[.,]?[0-9]*)',
+        r'expense[=:\s]+([0-9]+[.,]?[0-9]*)',
+        r'себест[=:\s]+([0-9]+[.,]?[0-9]*)',  # оставляем для совместимости
+        r'cost[=:\s]+([0-9]+[.,]?[0-9]*)'
     ]
     for pattern in cost_patterns:
         match = re.search(pattern, text_lower)
@@ -287,6 +306,9 @@ async def process_operation_amount(message: Message, state: FSMContext):
     payment_type = data.get("payment_type")
     category_id = data.get("category_id")
     
+    # Расходы учитываются только при вычитании
+    expenses = cost if operation_type == "subtract" else None
+    
     await db.add_transaction(
         chat_id=message.chat.id,
         amount=amount,
@@ -298,7 +320,7 @@ async def process_operation_amount(message: Message, state: FSMContext):
         category_id=category_id,
         quantity=quantity,
         unit_price=unit_price,
-        cost=cost
+        cost=expenses
     )
     
     payment_name = "наличными" if payment_type == "cash" else "безналичными"
@@ -309,8 +331,8 @@ async def process_operation_amount(message: Message, state: FSMContext):
         response += f"\nКоличество: {quantity:.1f} ед."
     if unit_price:
         response += f"\nЦена за единицу: {unit_price:.2f} ₽"
-    if cost:
-        response += f"\nСебестоимость: {cost:.2f} ₽"
+    if expenses:
+        response += f"\nРасходы: {expenses:.2f} ₽"
     
     await message.answer(response, reply_markup=get_main_keyboard())
     
@@ -553,14 +575,11 @@ async def callback_payment_type(callback: CallbackQuery, state: FSMContext):
         )
         await state.set_state(TransactionStates.waiting_for_category)
     else:
+        hint = get_unit_economics_hint(operation)
         await callback.message.edit_text(
             f"Введите сумму для {operation_text} {payment_text}:\n\n"
             f"Например: 1000 или 500.50\n\n"
-            f"Для юнит-экономики можно указать:\n"
-            f"• Количество: кол-во 5 или кол 5\n"
-            f"• Цена за единицу: цена 100 или price 100\n"
-            f"• Себестоимость: себест=50 или cost=50\n\n"
-            f"Пример: 500 кол 5 цена 100 себест=50"
+            f"{hint}"
         )
         await state.set_state(TransactionStates.waiting_for_operation_amount)
     
@@ -584,15 +603,12 @@ async def callback_select_category(callback: CallbackQuery, state: FSMContext):
     operation_text = "добавления" if operation == "add" else "вычитания"
     payment_text = "наличными" if payment_type == "cash" else "безналичными"
     
+    hint = get_unit_economics_hint(operation)
     await callback.message.edit_text(
         f"Категория: {category_name}\n\n"
         f"Введите сумму для {operation_text} {payment_text}:\n\n"
         f"Например: 1000 или 500.50\n\n"
-        f"Для юнит-экономики можно указать:\n"
-        f"• Количество: кол-во 5 или кол 5\n"
-        f"• Цена за единицу: цена 100 или price 100\n"
-        f"• Себестоимость: себест=50 или cost=50\n\n"
-        f"Пример: 500 кол 5 цена 100 себест=50"
+        f"{hint}"
     )
     await state.set_state(TransactionStates.waiting_for_operation_amount)
     await callback.answer()
@@ -608,14 +624,11 @@ async def callback_skip_category(callback: CallbackQuery, state: FSMContext):
     operation_text = "добавления" if operation == "add" else "вычитания"
     payment_text = "наличными" if payment_type == "cash" else "безналичными"
     
+    hint = get_unit_economics_hint(operation)
     await callback.message.edit_text(
         f"Введите сумму для {operation_text} {payment_text}:\n\n"
         f"Например: 1000 или 500.50\n\n"
-        f"Для юнит-экономики можно указать:\n"
-        f"• Количество: кол-во 5 или кол 5\n"
-        f"• Цена за единицу: цена 100 или price 100\n"
-        f"• Себестоимость: себест=50 или cost=50\n\n"
-        f"Пример: 500 кол 5 цена 100 себест=50"
+        f"{hint}"
     )
     await state.set_state(TransactionStates.waiting_for_operation_amount)
     await callback.answer()
@@ -698,7 +711,7 @@ async def callback_category_view(callback: CallbackQuery):
                 f"Транзакций: {trans_count}\n"
                 f"Единиц продано: {quantity:.1f}\n"
                 f"Выручка: {revenue:.2f} ₽\n"
-                f"Себестоимость: {cost:.2f} ₽\n"
+                f"Расходы: {cost:.2f} ₽\n"
                 f"Прибыль: {profit:.2f} ₽\n"
                 f"Маржа: {margin:.1f}%\n"
                 f"Средний чек: {avg_amount:.2f} ₽\n"
@@ -731,7 +744,7 @@ async def callback_unit_economics(callback: CallbackQuery):
             f"Транзакций: {summary['transactions']}\n"
             f"Единиц продано: {summary['units_sold']:.1f}\n"
             f"Выручка: {summary['revenue']:.2f} ₽\n"
-            f"Себестоимость: {summary['cost']:.2f} ₽\n"
+            f"Расходы: {summary['cost']:.2f} ₽\n"
             f"Прибыль: {summary['profit']:.2f} ₽\n"
             f"Маржа: {summary['margin']:.1f}%\n"
             f"Средний чек: {summary['avg_check']:.2f} ₽\n"
