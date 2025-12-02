@@ -37,17 +37,25 @@ async def init_db():
         if 'cost' not in column_names:
             await db.execute("ALTER TABLE transactions ADD COLUMN cost REAL")
         
-        # Таблица категорий для юнит-экономики
+        # Таблица категорий для юнит-экономики (источники дохода и категории расходов)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
                 description TEXT,
+                type TEXT NOT NULL DEFAULT 'income_source',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(chat_id, name)
+                UNIQUE(chat_id, name, type)
             )
         """)
+        
+        # Добавляем поле type, если таблица уже существовала
+        cursor = await db.execute("PRAGMA table_info(categories)")
+        columns = await cursor.fetchall()
+        column_names = [col[1] for col in columns]
+        if 'type' not in column_names:
+            await db.execute("ALTER TABLE categories ADD COLUMN type TEXT NOT NULL DEFAULT 'income_source'")
         
         # Индексы для оптимизации запросов
         await db.execute("""
@@ -126,40 +134,65 @@ async def reset_balance(chat_id: int):
 
 
 # Функции для работы с категориями и юнит-экономикой
-async def create_category(chat_id: int, name: str, description: Optional[str] = None) -> Optional[int]:
-    """Создание новой категории"""
+async def create_category(chat_id: int, name: str, category_type: str = 'income_source', description: Optional[str] = None) -> Optional[int]:
+    """Создание новой категории (источник дохода или категория расхода)"""
     async with aiosqlite.connect(DB_NAME) as db:
         try:
             cursor = await db.execute("""
-                INSERT INTO categories (chat_id, name, description)
-                VALUES (?, ?, ?)
-            """, (chat_id, name, description))
+                INSERT INTO categories (chat_id, name, description, type)
+                VALUES (?, ?, ?, ?)
+            """, (chat_id, name, description, category_type))
             await db.commit()
             return cursor.lastrowid
         except aiosqlite.IntegrityError:
             return None
 
 
-async def get_categories(chat_id: int):
-    """Получение всех категорий для чата"""
+async def get_categories(chat_id: int, category_type: Optional[str] = None):
+    """Получение категорий для чата (опционально по типу)"""
     async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("""
-            SELECT id, name, description, created_at
-            FROM categories
-            WHERE chat_id = ?
-            ORDER BY name
-        """, (chat_id,))
+        if category_type:
+            cursor = await db.execute("""
+                SELECT id, name, description, type, created_at
+                FROM categories
+                WHERE chat_id = ? AND type = ?
+                ORDER BY name
+            """, (chat_id, category_type))
+        else:
+            cursor = await db.execute("""
+                SELECT id, name, description, type, created_at
+                FROM categories
+                WHERE chat_id = ?
+                ORDER BY type, name
+            """, (chat_id,))
         return await cursor.fetchall()
 
 
-async def get_category_by_name(chat_id: int, name: str) -> Optional[Tuple[int, str, Optional[str]]]:
+async def get_income_sources(chat_id: int):
+    """Получение источников дохода"""
+    return await get_categories(chat_id, 'income_source')
+
+
+async def get_expense_categories(chat_id: int):
+    """Получение категорий расходов"""
+    return await get_categories(chat_id, 'expense_category')
+
+
+async def get_category_by_name(chat_id: int, name: str, category_type: Optional[str] = None) -> Optional[Tuple[int, str, Optional[str], str]]:
     """Получение категории по имени"""
     async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("""
-            SELECT id, name, description
-            FROM categories
-            WHERE chat_id = ? AND LOWER(name) = LOWER(?)
-        """, (chat_id, name))
+        if category_type:
+            cursor = await db.execute("""
+                SELECT id, name, description, type
+                FROM categories
+                WHERE chat_id = ? AND LOWER(name) = LOWER(?) AND type = ?
+            """, (chat_id, name, category_type))
+        else:
+            cursor = await db.execute("""
+                SELECT id, name, description, type
+                FROM categories
+                WHERE chat_id = ? AND LOWER(name) = LOWER(?)
+            """, (chat_id, name))
         row = await cursor.fetchone()
         return row if row else None
 
@@ -250,3 +283,56 @@ async def get_unit_economics_summary(chat_id: int, days: int = 30):
             }
         return None
 
+
+async def get_summary_by_categories(chat_id: int, days: int = 30):
+    """Сводная таблица доходов и расходов по категориям с процентами"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Доходы по источникам
+        income_cursor = await db.execute("""
+            SELECT 
+                c.id as category_id,
+                c.name as category_name,
+                COALESCE(SUM(t.amount), 0) as total_income,
+                COUNT(t.id) as transactions_count
+            FROM categories c
+            LEFT JOIN transactions t ON c.id = t.category_id 
+                AND t.chat_id = ?
+                AND t.operation_type = 'add'
+                AND datetime(t.created_at) >= datetime('now', '-' || ? || ' days')
+            WHERE c.chat_id = ? AND c.type = 'income_source'
+            GROUP BY c.id, c.name
+            ORDER BY total_income DESC
+        """, (chat_id, days, chat_id))
+        incomes = await income_cursor.fetchall()
+        
+        # Расходы по категориям
+        expense_cursor = await db.execute("""
+            SELECT 
+                c.id as category_id,
+                c.name as category_name,
+                COALESCE(SUM(t.amount), 0) as total_expense,
+                COUNT(t.id) as transactions_count
+            FROM categories c
+            LEFT JOIN transactions t ON c.id = t.category_id 
+                AND t.chat_id = ?
+                AND t.operation_type = 'subtract'
+                AND datetime(t.created_at) >= datetime('now', '-' || ? || ' days')
+            WHERE c.chat_id = ? AND c.type = 'expense_category'
+            GROUP BY c.id, c.name
+            ORDER BY total_expense DESC
+        """, (chat_id, days, chat_id))
+        expenses = await expense_cursor.fetchall()
+        
+        # Общие суммы
+        total_income = sum(row[2] for row in incomes) or 0
+        total_expense = sum(row[2] for row in expenses) or 0
+        total = total_income + total_expense
+        
+        return {
+            'incomes': incomes,
+            'expenses': expenses,
+            'total_income': total_income,
+            'total_expense': total_expense,
+            'total': total,
+            'days': days
+        }

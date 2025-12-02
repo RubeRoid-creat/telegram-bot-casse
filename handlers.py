@@ -211,16 +211,13 @@ def get_unit_economics_hint(operation: str) -> str:
     """Получить подсказку по юнит-данным в зависимости от операции"""
     if operation == "add":
         return (
-            "Для юнит-экономики можно указать:\n"
-            "• Количество: кол-во 5 или кол 5\n"
-            "• Цена за единицу: цена 100 или price 100\n\n"
-            "Пример: 500 кол 5 цена 100"
+            "После ввода суммы будет предложено выбрать источник дохода.\n"
+            "Примеры: Авито, Сайт, Сарафан, Приложение"
         )
     else:  # subtract
         return (
-            "Для учета расходов можно указать:\n"
-            "• Расходы: расход=50 или expense=50\n\n"
-            "Пример: 300 расход=50"
+            "После ввода суммы будет предложено выбрать категорию расхода.\n"
+            "Примеры: Закупка, Реклама, Аренда, Зарплата"
         )
 
 
@@ -405,10 +402,15 @@ async def process_category_name(message: Message, state: FSMContext):
         await message.answer("❌ Название категории слишком длинное (макс. 50 символов). Попробуйте еще раз.")
         return
     
-    category_id = await db.create_category(message.chat.id, category_name)
+    # Получаем тип категории из состояния
+    data = await state.get_data()
+    category_type = data.get("category_type", "income_source")
+    
+    category_id = await db.create_category(message.chat.id, category_name, category_type)
     if category_id:
+        type_text = "источник дохода" if category_type == "income_source" else "категория расхода"
         await message.answer(
-            f"✅ Категория '{category_name}' создана!",
+            f"✅ {type_text.capitalize()} '{category_name}' создан(а)!",
             reply_markup=get_main_keyboard()
         )
     else:
@@ -551,15 +553,20 @@ async def callback_payment_type(callback: CallbackQuery, state: FSMContext):
     
     await state.update_data(operation=operation, payment_type=payment_type)
     
-    # Предлагаем выбрать категорию или пропустить
-    categories = await db.get_categories(callback.message.chat.id)
-    
     operation_text = "добавления" if operation == "add" else "вычитания"
     payment_text = "наличными" if payment_type == "cash" else "безналичными"
     
-    if categories and operation == "add":
+    # При добавлении - выбор источника дохода, при вычитании - категории расхода
+    if operation == "add":
+        categories = await db.get_income_sources(callback.message.chat.id)
+        category_type_text = "источник дохода"
+    else:
+        categories = await db.get_expense_categories(callback.message.chat.id)
+        category_type_text = "категорию расхода"
+    
+    if categories:
         keyboard_buttons = []
-        for cat_id, name, description, created_at in categories:
+        for cat_id, name, description, cat_type, created_at in categories:
             keyboard_buttons.append([
                 InlineKeyboardButton(text=f"📁 {name}", callback_data=f"select_cat_{cat_id}")
             ])
@@ -569,8 +576,8 @@ async def callback_payment_type(callback: CallbackQuery, state: FSMContext):
         keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
         
         await callback.message.edit_text(
-            f"Выберите категорию для {operation_text} {payment_text}:\n\n"
-            f"Или пропустите, если категория не нужна.",
+            f"Выберите {category_type_text} для {operation_text} {payment_text}:\n\n"
+            f"Или пропустите, если не нужно.",
             reply_markup=keyboard
         )
         await state.set_state(TransactionStates.waiting_for_category)
@@ -638,34 +645,127 @@ async def callback_skip_category(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "categories_menu")
 async def callback_categories_menu(callback: CallbackQuery):
     """Меню управления категориями"""
-    categories = await db.get_categories(callback.message.chat.id)
+    keyboard_buttons = [
+        [
+            InlineKeyboardButton(text="💰 Источники дохода", callback_data="income_sources_menu")
+        ],
+        [
+            InlineKeyboardButton(text="💸 Категории расходов", callback_data="expense_categories_menu")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Сводная таблица", callback_data="summary_table")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")
+        ]
+    ]
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    
+    text = (
+        "📁 Управление категориями\n\n"
+        "• Источники дохода - для учета доходов (Авито, сайт, сарафан и т.д.)\n"
+        "• Категории расходов - для учета расходов по категориям\n"
+        "• Сводная таблица - статистика доходов и расходов"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "income_sources_menu")
+async def callback_income_sources_menu(callback: CallbackQuery):
+    """Меню источников дохода"""
+    sources = await db.get_income_sources(callback.message.chat.id)
     
     keyboard_buttons = []
-    for cat_id, name, description, created_at in categories:
+    for cat_id, name, description, cat_type, created_at in sources:
         keyboard_buttons.append([
-            InlineKeyboardButton(text=f"📁 {name}", callback_data=f"cat_view_{cat_id}")
+            InlineKeyboardButton(text=f"💰 {name}", callback_data=f"cat_view_{cat_id}")
         ])
     
     keyboard_buttons.append([
-        InlineKeyboardButton(text="➕ Создать категорию", callback_data="cat_create")
+        InlineKeyboardButton(text="➕ Добавить источник", callback_data="create_income_source")
     ])
     keyboard_buttons.append([
-        InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")
+        InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")
     ])
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     
-    if categories:
-        text = "📁 Ваши категории:\n\n"
-        for cat_id, name, description, created_at in categories:
+    text = "💰 Источники дохода:\n\n"
+    if sources:
+        for cat_id, name, description, cat_type, created_at in sources:
             text += f"• {name}"
             if description:
                 text += f" - {description}"
             text += "\n"
     else:
-        text = "📁 Категории не созданы. Создайте первую категорию для организации транзакций."
+        text += "Источники дохода не созданы.\n"
+        text += "Примеры: Авито, Сайт, Сарафан, Приложение"
     
     await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "expense_categories_menu")
+async def callback_expense_categories_menu(callback: CallbackQuery):
+    """Меню категорий расходов"""
+    categories = await db.get_expense_categories(callback.message.chat.id)
+    
+    keyboard_buttons = []
+    for cat_id, name, description, cat_type, created_at in categories:
+        keyboard_buttons.append([
+            InlineKeyboardButton(text=f"💸 {name}", callback_data=f"cat_view_{cat_id}")
+        ])
+    
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="➕ Добавить категорию", callback_data="create_expense_category")
+    ])
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")
+    ])
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    
+    text = "💸 Категории расходов:\n\n"
+    if categories:
+        for cat_id, name, description, cat_type, created_at in categories:
+            text += f"• {name}"
+            if description:
+                text += f" - {description}"
+            text += "\n"
+    else:
+        text += "Категории расходов не созданы.\n"
+        text += "Примеры: Закупка, Реклама, Аренда, Зарплата"
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "create_income_source")
+async def callback_create_income_source(callback: CallbackQuery, state: FSMContext):
+    """Создание источника дохода"""
+    await state.update_data(category_type="income_source")
+    await callback.message.edit_text(
+        "➕ Создание источника дохода\n\n"
+        "Введите название источника:\n"
+        "Например: Авито, Сайт, Сарафан, Приложение"
+    )
+    await state.set_state(TransactionStates.waiting_for_category_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "create_expense_category")
+async def callback_create_expense_category(callback: CallbackQuery, state: FSMContext):
+    """Создание категории расхода"""
+    await state.update_data(category_type="expense_category")
+    await callback.message.edit_text(
+        "➕ Создание категории расхода\n\n"
+        "Введите название категории:\n"
+        "Например: Закупка, Реклама, Аренда, Зарплата"
+    )
+    await state.set_state(TransactionStates.waiting_for_category_name)
     await callback.answer()
 
 
@@ -692,7 +792,7 @@ async def callback_category_view(callback: CallbackQuery):
         await callback.answer("❌ Категория не найдена", show_alert=True)
         return
     
-    cat_id, name, description, created_at = category
+    cat_id, name, description, cat_type, created_at = category
     
     # Получаем статистику по категории
     stats = await db.get_unit_economics_by_category(callback.message.chat.id, category_id, 30)
@@ -719,6 +819,55 @@ async def callback_category_view(callback: CallbackQuery):
             )
     else:
         text += "Нет данных за этот период"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "summary_table")
+async def callback_summary_table(callback: CallbackQuery):
+    """Сводная таблица доходов и расходов по категориям с процентами"""
+    summary = await db.get_summary_by_categories(callback.message.chat.id, 30)
+    
+    text = f"📊 Сводная таблица за {summary['days']} дней\n\n"
+    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    # Доходы по источникам
+    text += "💰 ДОХОДЫ:\n"
+    if summary['incomes']:
+        total_income = summary['total_income'] or 1  # Избегаем деления на ноль
+        for cat_id, name, income, count in summary['incomes']:
+            percentage = (income / total_income * 100) if total_income > 0 else 0
+            text += f"• {name}: {income:.2f} ₽ ({percentage:.1f}%)\n"
+        text += f"\nИтого доходов: {summary['total_income']:.2f} ₽\n\n"
+    else:
+        text += "Нет данных\n\n"
+    
+    # Расходы по категориям
+    text += "💸 РАСХОДЫ:\n"
+    if summary['expenses']:
+        total_expense = summary['total_expense'] or 1
+        for cat_id, name, expense, count in summary['expenses']:
+            percentage = (expense / total_expense * 100) if total_expense > 0 else 0
+            text += f"• {name}: {expense:.2f} ₽ ({percentage:.1f}%)\n"
+        text += f"\nИтого расходов: {summary['total_expense']:.2f} ₽\n\n"
+    else:
+        text += "Нет данных\n\n"
+    
+    # Итоги
+    text += "━━━━━━━━━━━━━━━━━━━━\n"
+    text += f"💰 Доходы: {summary['total_income']:.2f} ₽\n"
+    text += f"💸 Расходы: {summary['total_expense']:.2f} ₽\n"
+    profit = summary['total_income'] - summary['total_expense']
+    text += f"📈 Прибыль: {profit:.2f} ₽\n"
+    
+    if summary['total_income'] > 0:
+        margin = (profit / summary['total_income'] * 100)
+        text += f"📊 Маржа: {margin:.1f}%"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")]
