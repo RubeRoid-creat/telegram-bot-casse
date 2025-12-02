@@ -681,7 +681,8 @@ async def callback_income_sources_menu(callback: CallbackQuery):
     keyboard_buttons = []
     for cat_id, name, description, cat_type, created_at in sources:
         keyboard_buttons.append([
-            InlineKeyboardButton(text=f"💰 {name}", callback_data=f"cat_view_{cat_id}")
+            InlineKeyboardButton(text=f"💰 {name}", callback_data=f"cat_view_{cat_id}"),
+            InlineKeyboardButton(text="🗑", callback_data=f"delete_cat_{cat_id}")
         ])
     
     keyboard_buttons.append([
@@ -716,7 +717,8 @@ async def callback_expense_categories_menu(callback: CallbackQuery):
     keyboard_buttons = []
     for cat_id, name, description, cat_type, created_at in categories:
         keyboard_buttons.append([
-            InlineKeyboardButton(text=f"💸 {name}", callback_data=f"cat_view_{cat_id}")
+            InlineKeyboardButton(text=f"💸 {name}", callback_data=f"cat_view_{cat_id}"),
+            InlineKeyboardButton(text="🗑", callback_data=f"delete_cat_{cat_id}")
         ])
     
     keyboard_buttons.append([
@@ -797,7 +799,10 @@ async def callback_category_view(callback: CallbackQuery):
     # Получаем статистику по категории
     stats = await db.get_unit_economics_by_category(callback.message.chat.id, category_id, 30)
     
-    text = f"📁 Категория: {name}\n"
+    category_type_text = "Источник дохода" if cat_type == "income_source" else "Категория расхода"
+    back_menu = "income_sources_menu" if cat_type == "income_source" else "expense_categories_menu"
+    
+    text = f"📁 {category_type_text}: {name}\n"
     if description:
         text += f"Описание: {description}\n"
     text += f"\n📊 Статистика за 30 дней:\n\n"
@@ -821,11 +826,94 @@ async def callback_category_view(callback: CallbackQuery):
         text += "Нет данных за этот период"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к категориям", callback_data="categories_menu")]
+        [
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_cat_{category_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Назад", callback_data=back_menu)
+        ]
     ])
     
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("delete_cat_"))
+async def callback_delete_category(callback: CallbackQuery):
+    """Подтверждение удаления категории"""
+    category_id = int(callback.data.split("_")[-1])
+    
+    # Получаем информацию о категории
+    categories = await db.get_categories(callback.message.chat.id)
+    category = next((c for c in categories if c[0] == category_id), None)
+    
+    if not category:
+        await callback.answer("❌ Категория не найдена", show_alert=True)
+        return
+    
+    cat_id, name, description, cat_type, created_at = category
+    category_type_text = "источник дохода" if cat_type == "income_source" else "категорию расхода"
+    back_menu = "income_sources_menu" if cat_type == "income_source" else "expense_categories_menu"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_{category_id}"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"cat_view_{category_id}")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        f"⚠️ Подтвердите удаление\n\n"
+        f"Вы уверены, что хотите удалить {category_type_text} '{name}'?\n\n"
+        f"Все транзакции, связанные с этой категорией, останутся, но категория будет удалена.",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("confirm_delete_"))
+async def callback_confirm_delete(callback: CallbackQuery):
+    """Подтвержденное удаление категории"""
+    category_id = int(callback.data.split("_")[-1])
+    
+    # Получаем информацию о категории для возврата в правильное меню (до удаления)
+    categories = await db.get_categories(callback.message.chat.id)
+    category = next((c for c in categories if c[0] == category_id), None)
+    
+    if not category:
+        # Категория уже удалена, возвращаемся в общее меню категорий
+        await callback.answer("❌ Категория не найдена (возможно, уже удалена)", show_alert=True)
+        fake_callback = type('obj', (object,), {
+            'message': callback.message,
+            'answer': lambda x: None,
+            'data': 'categories_menu'
+        })()
+        await callback_categories_menu(fake_callback)
+        return
+    
+    cat_id, name, description, cat_type, created_at = category
+    category_type_text = "источник дохода" if cat_type == "income_source" else "категория расхода"
+    back_menu = "income_sources_menu" if cat_type == "income_source" else "expense_categories_menu"
+    
+    # Удаляем категорию
+    await db.delete_category(callback.message.chat.id, category_id)
+    
+    # Удаляем категорию
+    await db.delete_category(callback.message.chat.id, category_id)
+    
+    await callback.answer(f"✅ {category_type_text.capitalize()} '{name}' удален(а)", show_alert=True)
+    
+    # Возвращаемся в соответствующее меню, создав новый callback
+    fake_callback = type('obj', (object,), {
+        'message': callback.message,
+        'answer': lambda x: None,
+        'data': back_menu
+    })()
+    
+    if cat_type == "income_source":
+        await callback_income_sources_menu(fake_callback)
+    else:
+        await callback_expense_categories_menu(fake_callback)
 
 
 @router.callback_query(F.data == "summary_table")
