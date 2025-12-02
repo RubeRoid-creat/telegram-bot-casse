@@ -133,6 +133,22 @@ async def reset_balance(chat_id: int):
         await db.commit()
 
 
+async def reset_all_data(chat_id: int):
+    """Полное обнуление всех данных (транзакции + категории)"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM transactions WHERE chat_id = ?", (chat_id,))
+        await db.execute("DELETE FROM categories WHERE chat_id = ?", (chat_id,))
+        await db.commit()
+
+
+async def reset_all_data(chat_id: int):
+    """Полное обнуление всех данных (транзакции + категории)"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM transactions WHERE chat_id = ?", (chat_id,))
+        await db.execute("DELETE FROM categories WHERE chat_id = ?", (chat_id,))
+        await db.commit()
+
+
 # Функции для работы с категориями и юнит-экономикой
 async def create_category(chat_id: int, name: str, category_type: str = 'income_source', description: Optional[str] = None) -> Optional[int]:
     """Создание новой категории (источник дохода или категория расхода)"""

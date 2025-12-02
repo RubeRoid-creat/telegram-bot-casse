@@ -62,6 +62,9 @@ def get_main_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="🔄 Обновить", callback_data="refresh")
+        ],
+        [
+            InlineKeyboardButton(text="🗑 Обнулить БД", callback_data="reset_db_menu")
         ]
     ])
     return keyboard
@@ -190,21 +193,98 @@ async def cmd_history(message: Message):
     await show_history(message.chat.id, message)
 
 
+async def check_admin(bot, chat_id: int, user_id: int) -> bool:
+    """Проверка прав администратора"""
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.status in ['administrator', 'creator']
+    except Exception:
+        # В личных чатах проверка не работает, разрешаем
+        return True
+
+
 @router.message(Command("reset"))
 async def cmd_reset(message: Message):
     """Сброс баланса (только для админов)"""
-    # Проверка прав администратора
-    try:
-        member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
-        if member.status not in ['administrator', 'creator']:
-            await message.answer("❌ Эта команда доступна только администраторам", reply_markup=get_main_keyboard())
-            return
-    except Exception:
-        # В личных чатах проверка не работает, разрешаем
-        pass
+    is_admin = await check_admin(message.bot, message.chat.id, message.from_user.id)
+    if not is_admin:
+        await message.answer("❌ Эта команда доступна только администраторам", reply_markup=get_main_keyboard())
+        return
     
-    await db.reset_balance(message.chat.id)
-    await message.answer("✅ Баланс сброшен", reply_markup=get_main_keyboard())
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Да, обнулить", callback_data="confirm_reset_all"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")
+        ],
+        [
+            InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")
+        ]
+    ])
+    
+    await message.answer(
+        "⚠️ Подтвердите полное обнуление базы данных\n\n"
+        "Это удалит:\n"
+        "• Все транзакции\n"
+        "• Все категории (источники дохода и расходы)\n\n"
+        "Действие необратимо!",
+        reply_markup=keyboard
+    )
+
+
+@router.callback_query(F.data == "reset_db_menu")
+async def callback_reset_db_menu(callback: CallbackQuery):
+    """Меню обнуления базы данных"""
+    is_admin = await check_admin(callback.bot, callback.message.chat.id, callback.from_user.id)
+    if not is_admin:
+        await callback.answer("❌ Эта функция доступна только администраторам", show_alert=True)
+        return
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⚠️ Да, я уверен", callback_data="confirm_reset_all")
+        ],
+        [
+            InlineKeyboardButton(text="❌ Отмена", callback_data="main_menu")
+        ],
+        [
+            InlineKeyboardButton(text="🏠 На главную", callback_data="main_menu")
+        ]
+    ])
+    
+    await callback.message.edit_text(
+        "⚠️ ОБНУЛЕНИЕ БАЗЫ ДАННЫХ\n\n"
+        "Это удалит:\n"
+        "• Все транзакции\n"
+        "• Все категории (источники дохода и расходы)\n\n"
+        "⚠️ Действие необратимо!\n\n"
+        "Вы уверены?",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "confirm_reset_all")
+async def callback_confirm_reset_all(callback: CallbackQuery):
+    """Подтвержденное обнуление всех данных"""
+    is_admin = await check_admin(callback.bot, callback.message.chat.id, callback.from_user.id)
+    if not is_admin:
+        await callback.answer("❌ Эта функция доступна только администраторам", show_alert=True)
+        return
+    
+    # Полное обнуление всех данных
+    await db.reset_all_data(callback.message.chat.id)
+    
+    await callback.answer("✅ База данных полностью обнулена", show_alert=True)
+    
+    # Возвращаемся на главную с сообщением об обнулении
+    await callback.message.edit_text(
+        "✅ База данных полностью обнулена\n\n"
+        "Удалено:\n"
+        "• Все транзакции\n"
+        "• Все категории\n\n"
+        "Начните с создания новых категорий и транзакций.",
+        reply_markup=get_main_keyboard()
+    )
 
 
 def get_unit_economics_hint(operation: str) -> str:
